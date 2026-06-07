@@ -1,0 +1,53 @@
+import { defineConfig } from 'vite'
+import path from 'path'
+
+export default defineConfig({
+  build: {
+    lib: {
+      entry: path.resolve(__dirname, 'src/main.ts'),
+      formats: ['cjs'],
+      fileName: () => 'main.cjs',
+    },
+    outDir: 'dist',
+    emptyOutDir: false,
+    rollupOptions: {
+      external: [
+        'electron',
+        'electron-store',
+        'electron-log',
+        'electron-updater',
+        'chokidar',
+        'path',
+        'fs',
+        'child_process',
+        'crypto',
+        'os',
+        'url',
+        'stream',
+        'http',
+        'https',
+        'net',
+        'tls',
+        'zlib',
+        'util',
+        'events',
+        'buffer',
+        'string_decoder',
+        'querystring',
+        'punycode',
+        'dgram',
+        'dns',
+        'cluster',
+        'module',
+        'vm',
+        'timers',
+        'domain',
+        'constants',
+        'assert',
+        'console',
+        'process',
+        'perf_hooks',
+      ],
+    },
+  },
+})
