@@ -24,9 +24,9 @@
     "dist:win:zip": "npm run build:electron && electron-builder --win zip",
     "dist:mac": "npm run build:electron && electron-builder --mac",
     "dist:linux": "npm run build:electron && electron-builder --linux",
-    "dist:publish": "npm run dist && electron-builder --publish always",
-    "dist:publish:public": "npm run dist:publish",
-    "dist:publish:internal": "npm run dist:publish",
+    "dist:publish": "npm run dist:publish:public",
+    "dist:publish:public": "npm run dist && electron-builder --config electron-builder.public.yml --publish always",
+    "dist:publish:internal": "npm run dist && electron-builder --config electron-builder.yml --publish always",
     "prerelease:check": "node scripts/check-windows-prereqs.js",
     "lint": "eslint src --ext ts,tsx --report-unused-disable-directives --max-warnings 0",
     "preview": "vite preview"
