@@ -1,0 +1,86 @@
+appId: com.echolabs.developer-studio
+productName: ECHO Developer Studio
+copyright: Copyright © 2026 ECHO Labs
+directories:
+  output: release
+  buildResources: build
+files:
+  - dist/**/*
+  - assets/**/*
+  - build/**/*
+publish:
+  provider: github
+  owner: knoxhack
+  repo: ECHO-Developers-Studio
+  releaseType: release
+
+asar: true
+asarUnpack:
+  - build/icon.ico
+  - build/icon.png
+
+# macOS
+mac:
+  category: public.app-category.developer-tools
+  target:
+    - target: dmg
+      arch: [x64, arm64]
+  icon: build/icon.png
+  hardenedRuntime: true
+  gatekeeperAssess: false
+
+# Windows
+win:
+  target:
+    - target: nsis
+      arch: [x64, ia32]
+    - target: portable
+      arch: [x64]
+    - target: zip
+      arch: [x64]
+  icon: build/icon.ico
+  executableName: ECHODeveloperStudio
+  publisherName: ECHO Labs
+  verifyUpdateCodeSignature: false
+  signAndEditExecutable: false
+  signingHashAlgorithms:
+    - sha256
+  artifactName: ECHO-Developer-Studio-${version}-${arch}.${ext}
+
+# NSIS Installer Configuration
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: true
+  allowElevation: true
+  installerIcon: build/icon.ico
+  uninstallerIcon: build/icon.ico
+  installerHeaderIcon: build/icon.ico
+  createDesktopShortcut: always
+  createStartMenuShortcut: true
+  shortcutName: ECHO Developer Studio
+  uninstallDisplayName: ECHO Developer Studio
+  include: build/installer.nsh
+  artifactName: ECHO-Developer-Studio-${version}-Setup.${ext}
+
+# Portable (single .exe, no install)
+portable:
+  artifactName: ECHO-Developer-Studio-${version}-Portable.${ext}
+
+# Linux
+linux:
+  category: Development
+  target:
+    - target: AppImage
+      arch: [x64]
+    - target: deb
+      arch: [x64]
+    - target: rpm
+      arch: [x64]
+  icon: build/icon.png
+  maintainer: ECHO Labs
+  vendor: ECHO Labs
+  synopsis: The official command center for building and shipping the ECHO Platform.
+  description: |
+    ECHO Developer Studio is the official command center for building
+    and shipping the ECHO Platform. It provides tools for module
+    management, build automation, release management, and diagnostics.
