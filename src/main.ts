@@ -18,6 +18,14 @@ const { spawn } = child_process
 const { watch } = chokidar
 
 let mainWindow: BrowserWindow | null = null
+const DEV_UPDATE_FEED_OWNER = 'knoxhack'
+const DEV_UPDATE_FEED_REPO = 'ECHO-Developer-Studio'
+const DEV_PUBLIC_UPDATE_FEED_OWNER = 'knoxhack'
+const DEV_PUBLIC_UPDATE_FEED_REPO = 'ECHO-Developer-Studio'
+const UPDATE_FALLBACK_COMPAT_KEY = 'developer-studio-update-fallback-window'
+const UPDATE_FALLBACK_STABLE_RELEASES = 2
+type UpdateFeedConfig = { provider: 'github'; owner: string; repo: string; releaseType: 'release' }
+type MigrationFallbackWindow = { anchorVersion: string; anchorDistance: number; establishedAt: string }
 
 // ── Logging ──
 log.initialize()
@@ -43,6 +51,243 @@ const store = new Store<StudioStore>({
 
 const AUDIT_PATH = path.join(os.homedir(), '.echo-studio', 'audit.log')
 fs.mkdirSync(path.dirname(AUDIT_PATH), { recursive: true })
+
+function isUpdateDisabled(): boolean {
+  const disable = process.env['ECHO_UPDATES_DISABLED'] || process.env['UPDATE_DISABLED']
+  return disable === '1' || (disable || '').toLowerCase() === 'true'
+}
+
+function isPrereleaseVersion(value: string): boolean {
+  return /-\w/.test(value)
+}
+
+function parseStableVersion(value: string): { major: number; minor: number; patch: number } | null {
+  const match = /^(\d+)\.(\d+)\.(\d+)/.exec(value)
+  if (!match) {
+    return null
+  }
+  return {
+    major: Number(match[1]),
+    minor: Number(match[2]),
+    patch: Number(match[3])
+  }
+}
+
+function stableVersionDistance(value: { major: number; minor: number; patch: number }): number {
+  return value.major * 1_000_000 + value.minor * 1_000 + value.patch
+}
+
+function getCurrentVersionTag(): string {
+  return app.getVersion()
+}
+
+function resolveUpdateStream(): 'public' | 'internal' {
+  const stream = (process.env['ECHO_UPDATE_STREAM'] || process.env['ECHO_UPDATE_TARGET'] || 'public').toLowerCase()
+  return stream === 'internal' ? 'internal' : 'public'
+}
+
+function getFallbackWindow(): MigrationFallbackWindow | null {
+  return store.get(UPDATE_FALLBACK_COMPAT_KEY) as MigrationFallbackWindow | null
+}
+
+function supportsMigrationFallback(stableVersion: { major: number; minor: number; patch: number }): boolean {
+  const marker = getFallbackWindow()
+  if (!marker || !Number.isFinite(marker.anchorDistance)) {
+    store.set(UPDATE_FALLBACK_COMPAT_KEY, {
+      anchorVersion: getCurrentVersionTag(),
+      anchorDistance: stableVersionDistance(stableVersion),
+      establishedAt: new Date().toISOString()
+    })
+    return true
+  }
+
+  const currentDistance = stableVersionDistance(stableVersion)
+  return currentDistance <= marker.anchorDistance + UPDATE_FALLBACK_STABLE_RELEASES
+}
+
+function resolveTargetChannel(): string {
+  if (process.env['ECHO_UPDATE_CHANNEL']) {
+    return process.env['ECHO_UPDATE_CHANNEL']
+  }
+  return isPrereleaseVersion(app.getVersion()) ? 'beta' : 'stable'
+}
+
+function resolveUpdateFeed(owner: string, repo: string): UpdateFeedConfig {
+  return {
+    provider: 'github',
+    owner,
+    repo,
+    releaseType: 'release'
+  }
+}
+
+function assertUpdateFeedConfig(stream: 'public' | 'internal', feed: UpdateFeedConfig): void {
+  const owner = feed.owner.toLowerCase()
+  const repo = feed.repo.toLowerCase()
+  const expected =
+    stream === 'internal'
+      ? { owner: DEV_UPDATE_FEED_OWNER, repo: DEV_UPDATE_FEED_REPO }
+      : { owner: DEV_PUBLIC_UPDATE_FEED_OWNER, repo: DEV_PUBLIC_UPDATE_FEED_REPO }
+
+  if (owner !== expected.owner.toLowerCase() || repo !== expected.repo.toLowerCase()) {
+    throw new Error(`Invalid ${stream} update feed: ${feed.owner}/${feed.repo}. Expected ${expected.owner}/${expected.repo}.`)
+  }
+
+  // Dev Studio now ships from one canonical public updater feed.
+}
+
+function buildUpdateFeedConfig(): UpdateFeedConfig {
+  const stream = resolveUpdateStream()
+  const feed =
+    stream === 'internal'
+      ? resolveUpdateFeed(DEV_UPDATE_FEED_OWNER, DEV_UPDATE_FEED_REPO)
+      : getPublicUpdateFeedConfig()
+  assertUpdateFeedConfig(stream, feed)
+  return feed
+}
+
+function buildFallbackUpdateFeedConfig(): UpdateFeedConfig | null {
+  return null
+}
+
+function getFallbackFeedIfAllowed(): UpdateFeedConfig | null {
+  if (resolveUpdateStream() !== 'internal') {
+    return null
+  }
+
+  const primary = buildUpdateFeedConfig()
+  const fallback = buildFallbackUpdateFeedConfig()
+  if (!fallback || (fallback.owner === primary.owner && fallback.repo === primary.repo)) {
+    return null
+  }
+
+  const stableVersion = parseStableVersion(getCurrentVersionTag())
+  if (!stableVersion) {
+    return null
+  }
+
+  if (!supportsMigrationFallback(stableVersion)) {
+    return null
+  }
+
+  return fallback
+}
+
+function getPublicUpdateFeedConfig(): UpdateFeedConfig {
+  return resolveUpdateFeed(DEV_PUBLIC_UPDATE_FEED_OWNER, DEV_PUBLIC_UPDATE_FEED_REPO)
+}
+
+function setupAutoUpdater(window: BrowserWindow): void {
+  if (isUpdateDisabled()) {
+    window.webContents.send('update-status', { status: 'disabled', message: 'Update checks are disabled by policy.' })
+    return
+  }
+
+  autoUpdater.autoDownload = true
+  autoUpdater.autoInstallOnAppQuit = false
+  autoUpdater.channel = resolveTargetChannel()
+  autoUpdater.allowPrerelease = isPrereleaseVersion(app.getVersion()) || (process.env['ECHO_UPDATE_ALLOW_PRERELEASE'] || '').toLowerCase() === 'true'
+  const primaryFeed = buildUpdateFeedConfig()
+  autoUpdater.setFeedURL(primaryFeed)
+
+  autoUpdater.on('checking-for-update', () => {
+    window.webContents.send('update-status', { status: 'checking' })
+  })
+
+  autoUpdater.on('update-available', (info) => {
+    window.webContents.send('update-status', { status: 'available', version: info.version })
+  })
+
+  autoUpdater.on('update-not-available', () => {
+    window.webContents.send('update-status', { status: 'not-available' })
+  })
+
+  autoUpdater.on('download-progress', (progress) => {
+    window.webContents.send('update-status', {
+      status: 'downloading',
+      percent: Math.round(progress.percent),
+      bytesPerSecond: progress.bytesPerSecond
+    })
+  })
+
+  autoUpdater.on('update-downloaded', (info) => {
+    window.webContents.send('update-status', { status: 'downloaded', version: info.version })
+  })
+
+  autoUpdater.on('error', (error) => {
+    log.warn('Auto-update failed on primary feed:', error)
+    const fallback = getFallbackFeedIfAllowed()
+    const errorMessage = (error as Error).message
+    if (!fallback) {
+      window.webContents.send('update-status', { status: 'error', message: errorMessage })
+      return
+    }
+
+    const fallbackMarker = {
+      from: `${primaryFeed.owner}/${primaryFeed.repo}`,
+      to: `${fallback.owner}/${fallback.repo}`
+    }
+
+    log.warn(`Auto-update fallback from ${fallbackMarker.from} -> ${fallbackMarker.to} triggered for ${getCurrentVersionTag()}`)
+
+    window.webContents.send('update-status', {
+      status: 'fallback',
+      message: `Primary feed unavailable, trying legacy feed ${fallbackMarker.to}.`,
+      fallbackOwner: fallback.owner,
+      fallbackRepo: fallback.repo
+    })
+
+    try {
+      autoUpdater.setFeedURL(fallback)
+      autoUpdater.checkForUpdates().catch((fallbackError: Error) => {
+        window.webContents.send('update-status', {
+          status: 'error',
+          message: `Primary and fallback feeds failed: ${errorMessage}`,
+          fallbackOwner: fallback.owner,
+          fallbackRepo: fallback.repo,
+          fallbackReason: fallbackError.message
+        })
+        log.warn('Auto-update fallback failed:', fallbackError.message)
+      })
+    } catch (fallbackError) {
+      window.webContents.send('update-status', {
+        status: 'error',
+        message: `Primary and fallback feeds failed: ${errorMessage}`,
+        fallbackOwner: fallback.owner,
+        fallbackRepo: fallback.repo,
+      })
+      log.warn('Auto-update fallback setup failed:', fallbackError)
+    }
+  })
+
+  ipcMain.on('update:install', () => {
+    autoUpdater.quitAndInstall(false, true)
+  })
+
+  void autoUpdater.checkForUpdatesAndNotify()
+}
+
+export function getDeveloperStudioPublicUpdateFeed(): { owner: string; repo: string } {
+  const feed = getPublicUpdateFeedConfig()
+  return { owner: feed.owner, repo: feed.repo }
+}
+
+ipcMain.handle('echo:get-update-feed', () => {
+  const primary = buildUpdateFeedConfig()
+  const fallback = buildFallbackUpdateFeedConfig()
+  return {
+    primary: {
+      owner: primary.owner,
+      repo: primary.repo,
+    },
+    fallback: fallback ? { owner: fallback.owner, repo: fallback.repo } : null,
+    channel: resolveTargetChannel(),
+    migrationFallbackWindow: {
+      allowed: getFallbackFeedIfAllowed() !== null,
+      anchor: getFallbackWindow()?.anchorVersion ?? null
+    }
+  }
+})
 
 // ── Helper: ensure audit file ──
 function ensureAuditFile() {
@@ -112,17 +357,19 @@ function createWindow() {
   }
 }
 
-app.whenReady().then(() => {
-  createWindow()
-  app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) createWindow()
-  })
+  app.whenReady().then(() => {
+    createWindow()
+    app.on('activate', () => {
+      if (BrowserWindow.getAllWindows().length === 0) createWindow()
+    })
 
-  // Auto-updater check (silent, non-blocking)
-  if (process.env.NODE_ENV !== 'development') {
-    autoUpdater.checkForUpdatesAndNotify().catch((e: any) => log.warn('Auto-updater check failed:', e.message))
-  }
-})
+    if (process.env.NODE_ENV !== 'development') {
+      const mainWindowInstance = BrowserWindow.getAllWindows()[0]
+      if (mainWindowInstance) {
+        setupAutoUpdater(mainWindowInstance)
+      }
+    }
+  })
 
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit()
