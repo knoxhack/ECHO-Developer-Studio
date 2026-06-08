@@ -1,4 +1,4 @@
-appId: com.echolabs.developer-studio
+appId: com.knoxhack.echo.developer-studio
 productName: ECHO Developer Studio
 copyright: Copyright © 2026 ECHO Labs
 directories:
@@ -10,8 +10,8 @@ files:
   - build/**/**
 publish:
   provider: github
-  owner: echolabs
-  repo: echo-developer-studio
+  owner: knoxhack
+  repo: ECHO-Developer-Studio
   releaseType: release
 
 asar: true
