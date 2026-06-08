@@ -98,47 +98,36 @@ jobs:
           npm run dist:publish:public
 
       - name: Validate release assets
-        shell: bash
+        shell: pwsh
         run: |
-          set -euo pipefail
+          if (-not (Test-Path 'release')) {
+            throw 'release directory missing'
+          }
 
-          if [ ! -d release ]; then
-            echo "release directory missing"
-            exit 1
-          fi
+          $manifests = Get-ChildItem -Path release -Filter 'latest*.yml' -File
+          if (-not $manifests) {
+            throw 'Expected updater manifest latest*.yml missing'
+          }
 
-          if [ ! -f release/latest.yml ] && [ ! -f release/latest-linux.yml ]; then
-            echo "Expected updater manifest missing"
-            exit 1
-          fi
+          $artifacts = Get-ChildItem release -File | Where-Object { $_.Name -notmatch '^SHA256SUMS-' }
+          if (-not $artifacts) {
+            throw 'No release artifacts found'
+          }
 
-          if [ ! -f release/SHA256SUMS-$PLATFORM.txt ]; then
-            :
-          fi
-
-          FILE_COUNT=0
-          for f in release/*; do
-            if [ -f "$f" ] && [ "${f##*/}" != "SHA256SUMS-$PLATFORM.txt" ]; then
-              FILE_COUNT=$((FILE_COUNT + 1))
-            fi
-          done
-
-          if [ "$FILE_COUNT" -lt 1 ]; then
-            echo "No release artifacts found"
-            exit 1
-          fi
-
-          sha256sum release/* > "release/SHA256SUMS-${{ matrix.platform }}.txt"
-        env:
-          PLATFORM: ${{ matrix.platform }}
+          $sumFile = Join-Path release "SHA256SUMS-${{ matrix.platform }}.txt"
+          Remove-Item -Force $sumFile -ErrorAction SilentlyContinue
+          $artifacts | ForEach-Object {
+            $hash = Get-FileHash -Path $_.FullName -Algorithm SHA256
+            [System.IO.File]::AppendAllText($sumFile, "$($hash.Hash.ToLower())  $($_.Name)`n")
+          }
 
       - name: Ensure release exists
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          if ! gh release view "${{ needs.validate.outputs.tag }}" > /dev/null 2>&1; then
+          if (-not (gh release view "${{ needs.validate.outputs.tag }}")) {
             gh release create "${{ needs.validate.outputs.tag }}" --title "${{ needs.validate.outputs.tag }}" --generate-notes
-          fi
+          }
 
       - name: Upload platform checksums
         env:
