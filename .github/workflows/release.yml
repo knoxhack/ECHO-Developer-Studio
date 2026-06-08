@@ -19,8 +19,8 @@ jobs:
   validate:
     runs-on: ubuntu-latest
     outputs:
-      tag: ${{ steps.metadata.outputs.tag }}
-      channel: ${{ steps.metadata.outputs.channel }}
+      tag: ${{ steps.release-metadata.outputs.tag }}
+      channel: ${{ steps.release-metadata.outputs.channel }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -31,19 +31,19 @@ jobs:
           node-version: 20
           cache: npm
 
-      - id: metadata
+      - id: release-metadata
         shell: bash
         run: |
           TAG="${GITHUB_REF_NAME}"
+          if [ -z "$TAG" ] || [ "$TAG" = "null" ] || [ "$TAG" = "" ] || [ "$TAG" = "main" ]; then
+            TAG="v$(node -p \"require('./package.json').version\")"
+          fi
+
           if [ -n "${{ github.event_name }}" ] && [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             OVERRIDE='${{ github.event.inputs.tag }}'
             if [ -n "$OVERRIDE" ]; then
               TAG="$OVERRIDE"
             fi
-          fi
-
-          if [ -z "$TAG" ] || [ "$TAG" = "main" ] || [ "$TAG" = "" ]; then
-            TAG="v$(node -p \"require('./package.json').version\")"
           fi
 
           if ! [[ "$TAG" =~ ^v([0-9]+)\.([0-9]+)\.([0-9]+)(-beta\.[0-9A-Za-z.-]+)?$ ]]; then
@@ -67,17 +67,7 @@ jobs:
 
   release:
     needs: validate
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: windows-latest
-            platform: windows
-          - os: ubuntu-latest
-            platform: linux
-          - os: macos-latest
-            platform: mac
-    runs-on: ${{ matrix.os }}
+    runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
         with:
@@ -90,12 +80,12 @@ jobs:
 
       - run: npm ci
 
-      - name: Build and publish ${{ matrix.platform }} release artifacts
+      - name: Build and publish release artifacts
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           APP_UPDATE_CHANNEL: ${{ needs.validate.outputs.channel }}
         run: |
-          npm run dist:publish:public
+          npm run dist:publish:internal
 
       - name: Validate release assets
         shell: pwsh
@@ -106,31 +96,23 @@ jobs:
 
           $manifests = Get-ChildItem -Path release -Filter 'latest*.yml' -File
           if (-not $manifests) {
-            throw 'Expected updater manifest latest*.yml missing'
+            throw 'Expected updater manifest latest*.yml missing from release artifacts'
           }
 
-          $artifacts = Get-ChildItem release -File | Where-Object { $_.Name -notmatch '^SHA256SUMS-' }
-          if (-not $artifacts) {
-            throw 'No release artifacts found'
+          $installers = Get-ChildItem -Path release -File | Where-Object { $_.Extension -in '.exe', '.zip', '.dmg', '.AppImage', '.deb', '.rpm' }
+          if (-not $installers) {
+            throw 'No installer artifacts found under release directory'
           }
 
-          $sumFile = Join-Path release "SHA256SUMS-${{ matrix.platform }}.txt"
+          $sumFile = Join-Path release 'SHA256SUMS.txt'
           Remove-Item -Force $sumFile -ErrorAction SilentlyContinue
-          $artifacts | ForEach-Object {
+          Get-ChildItem release -File | ForEach-Object {
             $hash = Get-FileHash -Path $_.FullName -Algorithm SHA256
             [System.IO.File]::AppendAllText($sumFile, "$($hash.Hash.ToLower())  $($_.Name)`n")
           }
 
-      - name: Ensure release exists
+      - name: Upload checksum manifest
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          if (-not (gh release view "${{ needs.validate.outputs.tag }}")) {
-            gh release create "${{ needs.validate.outputs.tag }}" --title "${{ needs.validate.outputs.tag }}" --generate-notes
-          }
-
-      - name: Upload platform checksums
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          gh release upload "${{ needs.validate.outputs.tag }}" "release/SHA256SUMS-${{ matrix.platform }}.txt" --clobber
+          gh release upload "${{ needs.validate.outputs.tag }}" release/SHA256SUMS.txt --clobber
