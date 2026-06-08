@@ -111,8 +111,14 @@ jobs:
             [System.IO.File]::AppendAllText($sumFile, "$($hash.Hash.ToLower())  $($_.Name)`n")
           }
 
+      - name: Ensure release exists
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release view "${{ needs.validate.outputs.tag }}" || gh release create "${{ needs.validate.outputs.tag }}" --title "${{ needs.validate.outputs.tag }}" --notes "Automated release"
+
       - name: Upload checksum manifest
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release upload "${{ needs.validate.outputs.tag }}" release/SHA256SUMS.txt --clobber
+          gh release upload "${{ needs.validate.outputs.tag }}" release/SHA256SUMS.txt --clobber release/* --clobber
