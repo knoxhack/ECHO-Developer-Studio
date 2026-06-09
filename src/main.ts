@@ -6,6 +6,7 @@ import Store from 'electron-store'
 import chokidar from 'chokidar'
 import crypto from 'crypto'
 import os from 'os'
+import https from 'https'
 import log from 'electron-log'
 import { autoUpdater } from 'electron-updater'
 import { getGitInfo, getGitLog, getGitDiff } from './lib/git'
@@ -24,7 +25,22 @@ const DEV_PUBLIC_UPDATE_FEED_OWNER = 'knoxhack'
 const DEV_PUBLIC_UPDATE_FEED_REPO = 'ECHO-Developer-Studio'
 const UPDATE_FALLBACK_COMPAT_KEY = 'developer-studio-update-fallback-window'
 const UPDATE_FALLBACK_STABLE_RELEASES = 2
+const RELEASE_INDEX_CHANNEL_URL =
+  process.env['ECHO_RELEASE_INDEX_CHANNEL_URL'] ||
+  'https://raw.githubusercontent.com/knoxhack/ECHO-Release-Index/main/channels/alpha/launcher-channel.json'
+const RELEASE_INDEX_PRODUCT_ID = 'echo-developer-studio'
 type UpdateFeedConfig = { provider: 'github'; owner: string; repo: string; releaseType: 'release' }
+type ReleaseIndexProductEntry = {
+  id?: string
+  kind?: string
+  version?: string
+  channel?: string
+  sourceRepo?: string
+  compatibility?: string[]
+  validation?: string
+  artifacts?: unknown
+}
+type ReleaseIndexChannel = { catalogUrls?: string[] | Record<string, string[]> }
 type MigrationFallbackWindow = { anchorVersion: string; anchorDistance: number; establishedAt: string }
 
 // ── Logging ──
@@ -146,6 +162,61 @@ function buildUpdateFeedConfig(): UpdateFeedConfig {
   return feed
 }
 
+function readHttpsJson<T>(url: string): Promise<T> {
+  return new Promise((resolve, reject) => {
+    https
+      .get(url, { headers: { accept: 'application/json', 'user-agent': 'echo-developer-studio' } }, (response) => {
+        const statusCode = response.statusCode ?? 0
+        if (statusCode < 200 || statusCode >= 300) {
+          response.resume()
+          reject(new Error(`Release Index request failed with HTTP ${statusCode}: ${url}`))
+          return
+        }
+        const chunks: Buffer[] = []
+        response.on('data', (chunk) => chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)))
+        response.on('end', () => {
+          try {
+            resolve(JSON.parse(Buffer.concat(chunks).toString('utf8')) as T)
+          } catch (error) {
+            reject(error)
+          }
+        })
+      })
+      .on('error', reject)
+  })
+}
+
+function hasUpdaterArtifact(entry: ReleaseIndexProductEntry): boolean {
+  const visit = (node: unknown): boolean => {
+    if (Array.isArray(node)) return node.some(visit)
+    if (!node || typeof node !== 'object') return false
+    const row = node as Record<string, unknown>
+    if ((row.url || row.downloadUrl) && (row.sha256 || row.sha512) && (row.file || row.name || row.filename)) return true
+    return Object.values(row).some(visit)
+  }
+  return visit(entry.artifacts)
+}
+
+async function resolveReleaseIndexProductFeed(): Promise<{ feed: UpdateFeedConfig; entry: ReleaseIndexProductEntry } | null> {
+  const channel = await readHttpsJson<ReleaseIndexChannel>(RELEASE_INDEX_CHANNEL_URL)
+  const catalogUrls = Array.isArray(channel.catalogUrls)
+    ? channel.catalogUrls
+    : Object.values(channel.catalogUrls ?? {}).flat()
+  for (const catalogUrl of catalogUrls) {
+    const entry = await readHttpsJson<ReleaseIndexProductEntry>(catalogUrl)
+    if (entry.id !== RELEASE_INDEX_PRODUCT_ID) continue
+    if (entry.validation !== 'approved') throw new Error(`Release Index product ${RELEASE_INDEX_PRODUCT_ID} is ${entry.validation ?? 'missing validation'}.`)
+    if (!hasUpdaterArtifact(entry)) throw new Error(`Release Index product ${RELEASE_INDEX_PRODUCT_ID} has no updater artifact.`)
+    const sourceRepo = String(entry.sourceRepo ?? '')
+    const match = /^([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)$/.exec(sourceRepo)
+    if (!match) throw new Error(`Release Index product ${RELEASE_INDEX_PRODUCT_ID} has invalid sourceRepo.`)
+    const feed = resolveUpdateFeed(match[1], match[2])
+    assertUpdateFeedConfig(resolveUpdateStream(), feed)
+    return { feed, entry }
+  }
+  return null
+}
+
 function buildFallbackUpdateFeedConfig(): UpdateFeedConfig | null {
   return null
 }
@@ -177,7 +248,7 @@ function getPublicUpdateFeedConfig(): UpdateFeedConfig {
   return resolveUpdateFeed(DEV_PUBLIC_UPDATE_FEED_OWNER, DEV_PUBLIC_UPDATE_FEED_REPO)
 }
 
-function setupAutoUpdater(window: BrowserWindow): void {
+async function setupAutoUpdater(window: BrowserWindow): Promise<void> {
   if (isUpdateDisabled()) {
     window.webContents.send('update-status', { status: 'disabled', message: 'Update checks are disabled by policy.' })
     return
@@ -187,7 +258,32 @@ function setupAutoUpdater(window: BrowserWindow): void {
   autoUpdater.autoInstallOnAppQuit = false
   autoUpdater.channel = resolveTargetChannel()
   autoUpdater.allowPrerelease = isPrereleaseVersion(app.getVersion()) || (process.env['ECHO_UPDATE_ALLOW_PRERELEASE'] || '').toLowerCase() === 'true'
-  const primaryFeed = buildUpdateFeedConfig()
+  let primaryFeed = buildUpdateFeedConfig()
+  try {
+    const canonical = await resolveReleaseIndexProductFeed()
+    if (canonical) {
+      primaryFeed = canonical.feed
+      window.webContents.send('update-status', {
+        status: 'release-index-product',
+        productId: RELEASE_INDEX_PRODUCT_ID,
+        version: canonical.entry.version,
+        sourceRepo: canonical.entry.sourceRepo,
+      })
+    } else {
+      window.webContents.send('update-status', {
+        status: 'release-index-product-missing',
+        productId: RELEASE_INDEX_PRODUCT_ID,
+        message: 'Release Index product entry was not found; using compatibility updater feed.',
+      })
+    }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    window.webContents.send('update-status', {
+      status: 'release-index-product-warning',
+      productId: RELEASE_INDEX_PRODUCT_ID,
+      message: `${message} Using compatibility updater feed.`,
+    })
+  }
   autoUpdater.setFeedURL(primaryFeed)
 
   autoUpdater.on('checking-for-update', () => {
@@ -366,7 +462,7 @@ function createWindow() {
     if (process.env.NODE_ENV !== 'development') {
       const mainWindowInstance = BrowserWindow.getAllWindows()[0]
       if (mainWindowInstance) {
-        setupAutoUpdater(mainWindowInstance)
+        void setupAutoUpdater(mainWindowInstance)
       }
     }
   })
