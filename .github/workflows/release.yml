@@ -31,6 +31,8 @@ jobs:
           node-version: 20
           cache: npm
 
+      - run: npm ci
+
       - id: release-metadata
         shell: bash
         run: |
@@ -64,6 +66,10 @@ jobs:
 
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           echo "channel=$CHANNEL" >> "$GITHUB_OUTPUT"
+
+      - run: npm run lint
+      - run: npm run test
+      - run: npm run build
 
   release:
     needs: validate

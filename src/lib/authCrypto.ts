@@ -15,7 +15,10 @@ export function verifyPassphrase(passphrase: string, stored: string): boolean {
   const [salt, hash] = stored.split(':')
   if (!salt || !hash) return false
   const computed = crypto.pbkdf2Sync(passphrase, salt, ITERATIONS, KEYLEN, DIGEST).toString('hex')
-  return crypto.timingSafeEqual(Buffer.from(hash, 'hex'), Buffer.from(computed, 'hex'))
+  const expected = Buffer.from(hash, 'hex')
+  const actual = Buffer.from(computed, 'hex')
+  if (expected.length !== actual.length) return false
+  return crypto.timingSafeEqual(expected, actual)
 }
 
 export function generateInviteCode(): string {
