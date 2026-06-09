@@ -40,18 +40,20 @@ win:
       arch: [x64]
   icon: build/icon.ico
   executableName: ECHODeveloperStudio
-  publisherName: ECHO Labs
   verifyUpdateCodeSignature: false
   signAndEditExecutable: false
-  signingHashAlgorithms:
-    - sha256
-  artifactName: ECHO-Developer-Studio-${version}-${arch}.${ext}
+  signtoolOptions:
+    publisherName: ECHO Labs
+    signingHashAlgorithms:
+      - sha256
+  artifactName: ECHO-Developer-Studio-${version}-win-${arch}.${ext}
 
 # NSIS Installer Configuration
 nsis:
   oneClick: false
   allowToChangeInstallationDirectory: true
   allowElevation: true
+  packElevateHelper: true
   installerIcon: build/icon.ico
   uninstallerIcon: build/icon.ico
   installerHeaderIcon: build/icon.ico
