@@ -1,5 +1,7 @@
-﻿# Public Alpha Release Status
+# Developer Studio Release Status
 
-This brand-new repository is staged for the ECHO Native Platform public alpha.
+ECHO Developer Studio is the authoring and tooling surface for ECHO projects. It is not the ECHO Native Platform runtime release.
 
-Public release assets are staged through GitHub draft releases first. The official ECHO website is the public download hub.
+Native SDK features in Studio must follow the public `1.0.0-RC1` addon workflow: generate from the canonical Native template, compile against public SDK artifacts, package `.echo-addon`, validate with testkit, and load in Native release mode without loader internals or dev classpath fallback.
+
+Public Studio release assets are staged through GitHub releases and the ECHO website after their own release gates pass.
